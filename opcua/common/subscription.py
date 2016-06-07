@@ -126,7 +126,7 @@ class Subscription(object):
             if hasattr(self._handler, "datachange_notification"):
                 event_data = DataChangeNotif(data, item)
                 try:
-                    self._handler.datachange_notification(data.node, item.Value.Value.Value, event_data)
+                    self._handler.datachange_notification(data.node, item.Value, event_data)
                 except Exception:
                     self.logger.exception("Exception calling data change handler")
             elif hasattr(self._handler, "data_change"):  # deprecated API
