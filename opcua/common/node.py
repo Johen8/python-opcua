@@ -63,10 +63,50 @@ class Node(object):
 
     def get_data_type(self):
         """
-        get data type of node
+        get data type of node as NodeId
         """
         result = self.get_attribute(ua.AttributeIds.DataType)
         return result.Value.Value
+
+    def get_data_type_as_variant_type(self):
+        """
+        get data type of node as VariantType
+        This only works if node is a variable, otherwise type 
+        may not be convertible to VariantType
+        """
+        result = self.get_attribute(ua.AttributeIds.DataType)
+        return ua.DataType_to_VariantType(result.Value.Value)
+
+    def get_access_level(self):
+        """
+        get access level of node as a list of AccessLevel Enum
+        """
+        result = self.get_attribute(ua.AttributeIds.AccessLevel)
+        return ua.int_to_AccessLevel(result.Value.Value)
+
+    def get_user_access_level(self):
+        """
+        get user access level of node as a list of AccessLevel Enum
+        """
+        result = self.get_attribute(ua.AttributeIds.UserAccessLevel)
+        return ua.int_to_AccessLevel(result.Value.Value)
+
+    def get_event_notifier(self):
+        """
+        get EventNotifier attribute value as a list of EventNotifier Enum
+        """
+        result = self.get_attribute(ua.AttributeIds.EventNotifier)
+        return ua.int_to_EventNotifier(result.Value.Value)
+
+    def set_event_notifier(self, enum_list):
+        """
+        set event notifier attribute,
+        arg is a list of EventNotifier Enum
+        """
+        res = 1
+        for en in enum_list:
+            ua.set_bit(res, en.value)
+        self.set_attribute(ua.AttributeIds.EventNotifier, ua.DataValue(ua.Variant(res, ua.VariantType.Byte)))
 
     def get_node_class(self):
         """
@@ -382,17 +422,13 @@ class Node(object):
         result = self.server.history_read(params)[0]
         return result
 
-    def read_event_history(self, starttime=None, endtime=None, numvalues=0, evtype=ua.ObjectIds.BaseEventType):
+    def read_event_history(self, starttime=None, endtime=None, numvalues=0, evtypes=ua.ObjectIds.BaseEventType):
         """
         Read event history of a source node 
         result code from server is checked and an exception is raised in case of error
         If numvalues is > 0 and number of events in period is > numvalues
         then result will be truncated
         """
-
-        # FIXME event filter must be supplied externally, the problem is the node class doesn't have a way to get
-        # FIXME another node from the address space as these methods are at the server level, therefore there is
-        # FIXME no way to build an event filter here (although it could be nicer for a user who doesn't want a filter)
 
         details = ua.ReadEventDetails()
         if starttime:
@@ -405,13 +441,18 @@ class Node(object):
             details.EndTime = ua.DateTimeMinValue
         details.NumValuesPerNode = numvalues
 
-        evfilter = events.get_filter_from_event_type(Node(self.server, evtype))
+        if not isinstance(evtypes, (list, tuple)):
+            evtypes = [evtypes]
+
+        evtypes = [Node(self.server, evtype) for evtype in evtypes]
+
+        evfilter = events.get_filter_from_event_type(evtypes)
         details.Filter = evfilter
 
         result = self.history_read_events(details)
         event_res = []
         for res in result.HistoryData.Events:
-            event_res.append(events.EventResult.from_event_fields(evfilter.SelectClauses, res.EventFields))
+            event_res.append(events.Event.from_event_fields(evfilter.SelectClauses, res.EventFields))
         return event_res
 
     def history_read_events(self, details):

@@ -5,6 +5,7 @@ import uuid
 from opcua import ua
 from opcua import Node
 from opcua.common import events
+from  opcua.common import event_objects
 
 
 class EventGenerator(object):
@@ -25,14 +26,14 @@ class EventGenerator(object):
 
     def __init__(self, isession, etype=None, source=ua.ObjectIds.Server):
         if not etype:
-            etype = ua.BaseEvent()
+            etype = event_objects.BaseEvent()
 
         self.logger = logging.getLogger(__name__)
         self.isession = isession
         self.event = None
         node = None
 
-        if isinstance(etype, ua.BaseEvent):
+        if isinstance(etype, event_objects.BaseEvent):
             self.event = etype
         elif isinstance(etype, Node):
             node = etype
@@ -60,7 +61,7 @@ class EventGenerator(object):
         self.event.SourceNode = source.nodeid
         self.event.SourceName = source.get_browse_name().Name
 
-        source.set_attribute(ua.AttributeIds.EventNotifier, ua.DataValue(ua.Variant(1, ua.VariantType.Byte)))
+        source.set_event_notifier([ua.EventNotifier.SubscribeToEvents, ua.EventNotifier.HistoryRead])
         refs = []
         ref = ua.AddReferencesItem()
         ref.IsForward = True

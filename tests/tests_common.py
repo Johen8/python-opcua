@@ -289,11 +289,11 @@ class CommonTests(object):
     def test_variable_data_type(self):
         objects = self.opc.get_objects_node()
         var = objects.add_variable(3, 'stringfordatatype', "a string")
-        val = var.get_data_type()
-        self.assertEqual(val, ua.NodeId(ua.ObjectIds.String))
+        val = var.get_data_type_as_variant_type()
+        self.assertEqual(val, ua.VariantType.String)
         var = objects.add_variable(3, 'stringarrayfordatatype', ["a", "b"])
-        val = var.get_data_type()
-        self.assertEqual(val, ua.NodeId(ua.ObjectIds.String))
+        val = var.get_data_type_as_variant_type()
+        self.assertEqual(val, ua.VariantType.String)
 
     def test_add_string_array_variable(self):
         objects = self.opc.get_objects_node()
@@ -414,8 +414,8 @@ class CommonTests(object):
     def test_bool_variable(self):
         o = self.opc.get_objects_node()
         v = o.add_variable(3, 'BoolVariable', True)
-        dt = v.get_data_type()
-        self.assertEqual(dt, ua.TwoByteNodeId(ua.ObjectIds.Boolean))
+        dt = v.get_data_type_as_variant_type()
+        self.assertEqual(dt, ua.VariantType.Boolean)
         val = v.get_value()
         self.assertEqual(True, val)
         v.set_value(False)
@@ -479,6 +479,26 @@ class CommonTests(object):
         self.assertTrue(v in childs)
         self.assertTrue(p in childs)
 
+    def test_add_node_withtype(self):		
+        objects = self.opc.get_objects_node()
+        f = objects.add_folder(3, 'MyFolder_TypeTest')
+
+        o = f.add_object(3, 'MyObject1', ua.ObjectIds.BaseObjectType)
+        self.assertEqual(o.get_type_definition(), ua.ObjectIds.BaseObjectType)
+
+        o = f.add_object(3, 'MyObject2', ua.NodeId(ua.ObjectIds.BaseObjectType, 0) )
+        self.assertEqual(o.get_type_definition(), ua.ObjectIds.BaseObjectType)
+        
+        base_otype= self.opc.get_node(ua.ObjectIds.BaseObjectType)
+        custom_otype = base_otype.add_subtype(2, 'MyFooObjectType')
+
+        o = f.add_object(3, 'MyObject3', custom_otype.nodeid )
+        self.assertEqual(o.get_type_definition(), custom_otype.nodeid.Identifier)
+                
+        references = o.get_references(refs=ua.ObjectIds.HasTypeDefinition, direction=ua.BrowseDirection.Forward)
+        self.assertEqual(len(references), 1)        
+        self.assertEqual(references[0].NodeId, custom_otype.nodeid)
+                        
     def test_references_for_added_nodes(self):
         objects = self.opc.get_objects_node()
         o = objects.add_object(3, 'MyObject')

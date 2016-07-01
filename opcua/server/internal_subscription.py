@@ -5,6 +5,7 @@ server side implementation of a subscription object
 from threading import RLock
 import logging
 import copy
+import traceback
 
 from opcua import ua
 
@@ -15,11 +16,12 @@ class MonitoredItemData(object):
         self.client_handle = None
         self.callback_handle = None
         self.monitored_item_id = None
-        self.parameters = None
         self.mode = None
-        self.mfilter = None
+        self.filter = None
         self.mvalue = MonitoredItemValues()
         self.where_clause_evaluator = None
+        self.queue_size = 0
+
 
 class MonitoredItemValues(object):
 
@@ -36,6 +38,7 @@ class MonitoredItemValues(object):
 
     def get_old_value(self):
         return self.old_value
+
 
 class MonitoredItemService(object):
 
@@ -83,12 +86,11 @@ class MonitoredItemService(object):
             for mdata in self._monitored_items.values():
                 result = ua.MonitoredItemModifyResult()
                 if mdata.monitored_item_id == params.MonitoredItemId:
-                    self.isub.data.RevisedPublishingInterval = params.RequestedParameters.SamplingInterval
                     result.RevisedSamplingInterval = params.RequestedParameters.SamplingInterval
                     result.RevisedQueueSize = params.RequestedParameters.QueueSize
-                    result.FilterResult = params.RequestedParameters.Filter
-                    mdata.mfilter = result.FilterResult
-                    mdata.parameters = result
+                    if params.RequestedParameters.Filter is not None:
+                        mdata.filter = params.RequestedParameters.Filter
+                    mdata.queue_size = params.RequestedParameters.QueueSize
                     return result
             result = ua.MonitoredItemModifyResult()
             result.StatusCode(ua.StatusCodes.BadMonitoredItemIdInvalid)
@@ -108,11 +110,11 @@ class MonitoredItemService(object):
         self.logger.debug("Creating MonitoredItem with id %s", result.MonitoredItemId)
 
         mdata = MonitoredItemData()
-        mdata.parameters = result
         mdata.mode = params.MonitoringMode
         mdata.client_handle = params.RequestedParameters.ClientHandle
-        mdata.mfilter = params.RequestedParameters.Filter
         mdata.monitored_item_id = result.MonitoredItemId
+        mdata.queue_size = params.RequestedParameters.QueueSize
+        mdata.filter = params.RequestedParameters.Filter
 
         return result, mdata
 
@@ -123,14 +125,11 @@ class MonitoredItemService(object):
 
         result, mdata = self._make_monitored_item_common(params)
         ev_notify_byte = self.aspace.get_attribute_value(params.ItemToMonitor.NodeId, ua.AttributeIds.EventNotifier).Value.Value
-        if ev_notify_byte is None or ev_notify_byte & 1 == 0:
+        if ev_notify_byte is None or not ua.test_bit(ev_notify_byte, ua.EventNotifier.SubscribeToEvents):
             result.StatusCode = ua.StatusCode(ua.StatusCodes.BadServiceUnsupported)
             return result
-        result.FilterResult = ua.EventFilterResult()
-        for _ in params.RequestedParameters.Filter.SelectClauses:
-            result.FilterResult.SelectClauseResults.append(ua.StatusCode())
-        # TODO: spec says we should check WhereClause here
-        mdata.where_clause_evaluator = WhereClauseEvaluator(self.logger, self.aspace, mdata.mfilter.WhereClause)
+        # result.FilterResult = ua.EventFilterResult()  # spec says we can ignore if not error
+        mdata.where_clause_evaluator = WhereClauseEvaluator(self.logger, self.aspace, mdata.filter.WhereClause)
         self._commit_monitored_item(result, mdata)
         if params.ItemToMonitor.NodeId not in self._monitored_events:
             self._monitored_events[params.ItemToMonitor.NodeId] = []
@@ -192,17 +191,18 @@ class MonitoredItemService(object):
                 mid = self._monitored_datachange[handle]
                 mdata = self._monitored_items[mid]
                 mdata.mvalue.set_current_value(value.Value.Value)
-                if mdata.mfilter != None:
-                    deadband_flag_pass = self.deadband_callback(mdata.mvalue, mdata.mfilter)
+                if mdata.filter is not None:
+                    deadband_flag_pass = self.deadband_callback(mdata.mvalue, mdata.filter)
                 else:
                     deadband_flag_pass = True
                 if deadband_flag_pass:
                     event.ClientHandle = mdata.client_handle
                     event.Value = value
-                    self.isub.enqueue_datachange_event(mid, event, mdata.parameters.RevisedQueueSize)
+                    self.isub.enqueue_datachange_event(mid, event, mdata.queue_size)
 
-    def deadband_callback(self, values, filter):
-        if (values.get_old_value() == None) or ((abs(values.get_current_value() - values.get_old_value())) > filter.DeadbandValue):
+    def deadband_callback(self, values, flt):
+        if (values.get_old_value() is not None) or \
+                ((abs(values.get_current_value() - values.get_old_value())) > flt.DeadbandValue):
             return True
         else:
             return False
@@ -225,29 +225,12 @@ class MonitoredItemService(object):
             return
         mdata = self._monitored_items[mid]
         if not mdata.where_clause_evaluator.eval(event):
-            self.logger.debug("Event does not fit WhereClause, not generating event", mid, event, self)
+            self.logger.info("%s, %s, Event %s does not fit WhereClause, not generating event", self, mid, event)
             return
         fieldlist = ua.EventFieldList()
         fieldlist.ClientHandle = mdata.client_handle
-        fieldlist.EventFields = self._get_event_fields(mdata.mfilter, event)
-        self.isub.enqueue_event(mid, fieldlist, mdata.parameters.RevisedQueueSize)
-
-    def _get_event_fields(self, evfilter, event):
-        fields = []
-        for sattr in evfilter.SelectClauses:
-            try:
-                if not sattr.BrowsePath:
-                    val = getattr(event, sattr.Attribute.name)
-                    val = copy.deepcopy(val)
-                    fields.append(ua.Variant(val))
-                else:
-                    name = sattr.BrowsePath[0].Name
-                    val = getattr(event, name)
-                    val = copy.deepcopy(val)
-                    fields.append(ua.Variant(val))
-            except AttributeError:
-                fields.append(ua.Variant())
-        return fields
+        fieldlist.EventFields = event.to_event_fields(mdata.filter.SelectClauses)
+        self.isub.enqueue_event(mid, fieldlist, mdata.queue_size)
 
     def trigger_statuschange(self, code):
         self.isub.enqueue_statuschange(code)
@@ -256,7 +239,7 @@ class MonitoredItemService(object):
 class InternalSubscription(object):
 
     def __init__(self, subservice, data, addressspace, callback):
-        self.logger = logging.getLogger(__name__ + "." + str(data.SubscriptionId))
+        self.logger = logging.getLogger(__name__)
         self.aspace = addressspace
         self.subservice = subservice
         self.data = data
@@ -287,7 +270,6 @@ class InternalSubscription(object):
         self.monitored_item_srv.delete_all_monitored_items()
 
     def _subscription_loop(self):
-        #self.logger.debug("%s loop", self)
         if not self._stopev:
             self.subservice.loop.call_later(self.data.RevisedPublishingInterval / 1000.0, self._sub_loop)
 
@@ -315,7 +297,8 @@ class InternalSubscription(object):
             self._stopev = True
         result = None
         with self._lock:
-            if self.has_published_results():  # FIXME: should we pop a publish request here? or we do not care?
+            if self.has_published_results():  
+                # FIXME: should we pop a publish request here? or we do not care?
                 self._publish_cycles_count += 1
                 result = self._pop_publish_result()
         if result is not None:
@@ -410,7 +393,7 @@ class WhereClauseEvaluator(object):
         try:
             res = self._eval_el(0, event)
         except Exception as ex:
-            self.logger.warning("Exception while evaluating WhereClause %s for event %s: %s", self.elements, event, ex)
+            self.logger.exception("Exception while evaluating WhereClause %s for event %s: %s", self.elements, event, ex)
             return False
         return res
 
@@ -447,11 +430,10 @@ class WhereClauseEvaluator(object):
             self.logger.warn("Cast operand not implemented, assuming True")
             return True
         elif el.FilterOperator == ua.FilterOperator.OfType:
-            self.logger.warn("OfType operand not implemented, assuming True")
-            return True
+            return event.EventType == self._eval_op(ops[0], event)
         else:
             # TODO: implement missing operators
-            print("WhereClause not implemented for element: %s", el)
+            self.logger.warning("WhereClause not implemented for element: %s", el)
             raise NotImplementedError
 
     def _like_operator(self, string, pattern):

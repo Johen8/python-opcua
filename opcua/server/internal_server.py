@@ -177,23 +177,23 @@ class InternalServer(object):
         node.unset_attr_bit(ua.AttributeIds.UserAccessLevel, ua.AccessLevel.HistoryRead)
         self.history_manager.dehistorize(node)
 
-    def enable_history_event(self, source, period=timedelta(days=7)):
+    def enable_history_event(self, source, period=timedelta(days=7), count=0):
         """
         Set attribute History Read of object events to True and start storing data for history
         """
-        # to historize events of an object, first check if object supports events
-        source_event_notifier = source.get_attribute(ua.AttributeIds.EventNotifier)
-        if source_event_notifier.Value.Value & 1 == 1:  # check bit 0
-            # if it supports events, turn on bit 2 (enables history read)
-            source.set_attr_bit(ua.AttributeIds.EventNotifier, 2)
-            # send the object to history manager
-            self.history_manager.historize_event(source, period)
+        event_notifier = source.get_event_notifier()
+        if ua.EventNotifier.SubscribeToEvents not in event_notifier:
+            raise ua.UaError("Node does not generate events", event_notifier)
+        if ua.EventNotifier.SubscribeToEvents not in event_notifier:
+            event_notifier.append(ua.EventNotifier.HistoryRead)
+            source.set_event_notifier(event_notifier)
+        self.history_manager.historize_event(source, period, count)
 
     def disable_history_event(self, source):
         """
         Set attribute History Read of node to False and stop storing data for history
         """
-        source.unset_attr_bit(ua.AttributeIds.EventNotifier, 2)
+        source.unset_attr_bit(ua.AttributeIds.EventNotifier, ua.EventNotifier.HistoryRead)
         self.history_manager.dehistorize(source)
 
 

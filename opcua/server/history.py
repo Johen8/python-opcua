@@ -44,7 +44,7 @@ class HistoryStorageInterface(object):
         """
         raise NotImplementedError
 
-    def new_historized_event(self, source_id, etype, period, count=0):
+    def new_historized_event(self, source_id, evtypes, period, count=0):
         """
         Called when historization of events is enabled on server side
         Returns None
@@ -77,7 +77,7 @@ class HistoryStorageInterface(object):
 
 class HistoryDict(HistoryStorageInterface):
     """
-    very minimal history backend storing data in memory using a Python dictionary
+    very minimal history back end storing data in memory using a Python dictionary
     """
     def __init__(self):
         self._datachanges = {}
@@ -126,7 +126,7 @@ class HistoryDict(HistoryStorageInterface):
                 results = results[:nb_values]
             return results, cont
 
-    def new_historized_event(self, source_id, etype, period, count):
+    def new_historized_event(self, source_id, evtypes, period, count=0):
         if source_id in self._events:
             raise UaNodeAlreadyHistorizedError(source_id)
         self._events[source_id] = []
@@ -208,7 +208,7 @@ class HistoryManager(object):
 
     def historize_data_change(self, node, period=timedelta(days=7), count=0):
         """
-        subscribe to the nodes' data changes and store the data in the active storage
+        Subscribe to the nodes' data changes and store the data in the active storage.
         """
         if not self._sub:
             self._sub = self._create_subscription(SubHandler(self.storage))
@@ -220,24 +220,36 @@ class HistoryManager(object):
 
     def historize_event(self, source, period=timedelta(days=7), count=0):
         """
-        subscribe to the source nodes' events and store the data in the active storage; custom event properties included
+        Subscribe to the source nodes' events and store the data in the active storage.
+
+        SQL Implementation
+        The default is to historize every event type the source generates, custom event properties are included. At
+        this time there is no way to historize a specific event type. The user software can filter out events which are
+        not desired when reading.
+
+        Note that adding custom events to a source node AFTER historizing has been activated is not supported at this
+        time (in SQL history there will be no columns in the SQL table for the new event properties). For SQL The table
+        must be deleted manually so that a new table with the custom event fields can be created.
         """
         if not self._sub:
             self._sub = self._create_subscription(SubHandler(self.storage))
         if source in self._handlers:
             raise ua.UaError("Events from {} are already historized".format(source))
 
-        # get the event types the source node generates and a list of all possible event fields
-        event_types, ev_fields = self._get_source_event_data(source)
+        # get list of all event types that the source node generates; change this to only historize specific events
+        event_types = source.get_referenced_nodes(ua.ObjectIds.GeneratesEvent)
 
-        self.storage.new_historized_event(source.nodeid, ev_fields, period, count)
+        self.storage.new_historized_event(source.nodeid, event_types, period, count)
 
-        handler = self._sub.subscribe_events(source)  # FIXME supply list of event types when master is fixed
+        handler = self._sub.subscribe_events(source, event_types)
         self._handlers[source] = handler
 
     def dehistorize(self, node):
         """
-        remove subscription to the node/source which is being historized
+        Remove subscription to the node/source which is being historized
+
+        SQL Implementation
+        Only the subscriptions is removed. The historical data remains.
         """
         if node in self._handlers:
             self._sub.unsubscribe(self._handlers[node])
@@ -327,19 +339,6 @@ class HistoryManager(object):
         if cont:
             cont = ua.pack_datetime(cont)
         return results, cont
-
-    def _get_source_event_data(self, source):
-        # get all event types which the source node can generate; get the fields of those event types
-        event_types = source.get_referenced_nodes(ua.ObjectIds.GeneratesEvent)
-
-        ev_aggregate_fields = []
-        for event_type in event_types:
-            ev_aggregate_fields.extend((events.get_event_properties_from_type_node(event_type)))
-
-        ev_fields = []
-        for field in set(ev_aggregate_fields):
-            ev_fields.append(field.get_display_name().Text.decode(encoding='utf-8'))
-        return event_types, ev_fields
 
     def update_history(self, params):
         """
