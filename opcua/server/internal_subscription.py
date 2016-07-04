@@ -201,7 +201,7 @@ class MonitoredItemService(object):
                     self.isub.enqueue_datachange_event(mid, event, mdata.queue_size)
 
     def deadband_callback(self, values, flt):
-        if (values.get_old_value() is not None) or \
+        if (values.get_old_value() is None) or \
                 ((abs(values.get_current_value() - values.get_old_value())) > flt.DeadbandValue):
             return True
         else:
